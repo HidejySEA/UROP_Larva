@@ -1,0 +1,5 @@
+- HX711 Arduino Library by bodge : https://github.com/bogde/HX711
+- LiquidCrystal_I2C Arduino Library : https://github.com/marcoschwartz/LiquidCrystal_I2C
+- Arduino_JSON Arduino Library : https://github.com/arduino-libraries/Arduino_JSON
+- ESPAsyncWebServer Arduino Library : https://github.com/me-no-dev/ESPAsyncWebServer
+- AsyncTCP Arduino Library : https://github.com/me-no-dev/AsyncTCP
