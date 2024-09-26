@@ -7,31 +7,31 @@
 #if defined(ESP8266)|| defined(ESP32) || defined(AVR)
 #include <EEPROM.h>
 #include "DHT.h"
+#include <HTTPClient.h>
 #endif
 
 // WiFi credentials
-const char* ssid     = "notyouriphone";
-const char* password = "hidejy123";
+const char* ssid     = "pc_home";
+const char* password = "362136Pc";
 
-// IFTTT server information
-const char* resource = "https://maker.ifttt.com/trigger/ESP32_test/with/key/dhQ0R8oARgUE5M9wfjWahi";
-const char* server = "maker.ifttt.com";
+// Google script Web_App_URL.
+String Web_App_URL = "https://script.google.com/macros/s/AKfycbxFxHhEQ6fTwVA3sdZZZhIQxiYzgpGioLPPf7uqT4U8ooFJLiemOLphk_ziRObjReJ9/exec";
 
 // MHZ19 CO2 sensor pins
-const int rx_pin = 1; // Serial tx pin no 
-const int tx_pin = 2; // Serial rx pin no  (these two ports need to be reversed )
+const int rx_pin = 15; // Serial tx pin no 
+const int tx_pin = 16; // Serial rx pin no  (these two ports need to be reversed )
 MHZ19_uart mhz19;
 
 // HX711 load cell pins and initialization
-const int HX711_dout = 3; // MCU > HX711 dout pin
-const int HX711_sck = 4;  // MCU > HX711 sck pin
+const int HX711_dout = 4; // MCU > HX711 dout pin
+const int HX711_sck =  5;  // MCU > HX711 sck pin
 HX711_ADC LoadCell(HX711_dout, HX711_sck);
 
 const int calVal_eepromAdress = 0;
 unsigned long t = 0;
 
 // Temperature sensor initialization
-#define ONE_WIRE_BUS 5
+#define ONE_WIRE_BUS 6
 OneWire oneWire(ONE_WIRE_BUS);
 DallasTemperature sensors(&oneWire);
 
@@ -39,28 +39,38 @@ DallasTemperature sensors(&oneWire);
 DFRobot_ESP_PH ph;
 #define ESPADC 4096.0   // the esp Analog Digital Conversion value
 #define ESPVOLTAGE 3300 // the esp voltage supply value
-#define PH_PIN 9      // the esp gpio data pin number (i forgot to connect to which one)
+#define PH_PIN 10      // the esp gpio data pin number (i forgot to connect to which one)
 float voltage, phValue, temperature = 25;
 
 // Capacitive Soil Moisture Sensor
-#define m_sensorPin1 6
-#define m_sensorPin2 7
-#define m_sensorPin3 8
+#define m_sensorPin1 11
+float measured_moisture; // Store the moisture measured
 
-byte analog_pinsOut_moisture[] = {m_sensorPin1, m_sensorPin2, m_sensorPin3};
-const int num_of_msensors = sizeof(analog_pinsOut_moisture) / sizeof(analog_pinsOut_moisture[0]);
-float measured_moisture_Array[num_of_msensors]; // Store an instance of all moisture measured
 
 // DHT 22
-#define DHTPIN 29     // Digital pin connected to the DHT sensor #2 located at the Outlet
+#define DHTPIN 35    // Digital pin connected to the DHT sensor #2 located at the Outlet
 #define DHTTYPE DHT22   // DHT 22
 DHT dht(DHTPIN, DHTTYPE); // Initilialize DHT sensor
 float dhtTemperature = 0;
 float dhtHumidity = 0;
 
+// Fan control pins
+#define FAN1_PWM_PIN 17  // PWM pin for Fan 1
+#define FAN2_PWM_PIN 18  // PWM pin for Fan 2
+
+
+// Temperature threshold for fan control
+#define TEMP_LOW 25    // Low temperature threshold
+#define TEMP_MEDIUM 30 // Medium temperature threshold
+#define TEMP_HIGH 35   // High temperature threshold
+
 // Timing settings
 unsigned long previousMillis = 0; 
 const long interval = 60000; // Interval to wait for (milliseconds) - 1 minute
+// Fan speed
+int fan1Speed = 0;  // Variable to store Fan 1 speed (PWM value)
+int fan2Speed = 0;  // Variable to store Fan 2 speed (PWM value)
+
 
 //--------------------------------------SETUP---------------------------------------------//
 void setup() {
@@ -95,16 +105,20 @@ void setup() {
   } else {
     LoadCell.setCalFactor(calibrationValue); // Set calibration factor (float)
     Serial.println("Startup is complete");
+  }
   // pH sensor setup
   EEPROM.begin(32); // Needed to permit storage of calibration value in EEPROM
   ph.begin();
-  }
+
+// Set initial fan speed to 0 (fans off)
+  analogWrite(FAN1_PWM_PIN, 0);
+  analogWrite(FAN2_PWM_PIN, 0);
 }
 void loop() {
   unsigned long currentMillis = millis();
   static boolean newDataReady = 0;
   const int serialPrintInterval = 10000; // Set to 10 seconds (10000 milliseconds)
-
+  
   // Check for new data from HX711
   if (LoadCell.update()) newDataReady = true;
 
@@ -121,8 +135,8 @@ void loop() {
     phValue = ph.readPH(voltage, temperature); // Convert voltage to pH with temperature compensation
     Serial.print("pH:");
     Serial.println(phValue, 4);
-
-    // Read temperature
+    
+    // Read temperature probe
     sensors.requestTemperatures();
     float tempC = sensors.getTempCByIndex(0);
     Serial.print("Temperature (C): ");
@@ -137,15 +151,16 @@ void loop() {
     Serial.println(tempco2);
 
     // Read moisture sensors
-    readMoistureSensors();
-    for (int i = 0; i < num_of_msensors; i++) {
-      Serial.print("Moisture Sensor ");
-      Serial.print(i + 1);
-      Serial.print(": ");
-      Serial.println(measured_moisture_Array[i]);
-    }
+    readMoistureSensor();
+    Serial.print("Moisture Sensor: ");
+    Serial.println(measured_moisture);
+
+
     // Read DHT sensor
     readDHTSensor();
+
+    // Fan speed control based on temperature
+    controlFans(tempC);
   }
 
   // Receive command from serial terminal, send 't' to initiate tare operation
@@ -162,9 +177,11 @@ void loop() {
   // Check if it's time to publish a new message
   if (currentMillis - previousMillis >= interval) {
     previousMillis = currentMillis; // Save the last time a message was sent
-    makeIFTTTRequest();
+    // Upload data to Google Sheets
+    uploadDataToGoogleSheets(); // Call to upload data to Google Sheets
   }
 }
+
 
 void initWifi() {
   Serial.print("Connecting to: "); 
@@ -189,14 +206,11 @@ void initWifi() {
   Serial.println(WiFi.localIP());
 }
 
-void readMoistureSensors() {
-  for (int i = 0; i < num_of_msensors; i++) {
-    measured_moisture_Array[i] = analogRead(analog_pinsOut_moisture[i]);
-    // Serial.print("Moisture Sensor ");
-    // Serial.print(i + 1);
-    // Serial.print(": ");
-    // Serial.println(measured_moisture_Array[i]);
-  }
+
+void readMoistureSensor() {
+  measured_moisture = analogRead(m_sensorPin1);
+  Serial.print("Moisture Sensor: ");
+  Serial.println(measured_moisture);
 }
 
 void readDHTSensor() {
@@ -210,98 +224,77 @@ void readDHTSensor() {
     }
 }
 
-void makeIFTTTRequest() {
-  Serial.print("Connecting to "); 
-  Serial.print(server);
-
-  WiFiClient client;
-  int retries = 5;
-  while(!client.connect(server, 80) && (retries-- > 0)) {
-    Serial.print(".");
+void controlFans(float temperature) {
+  if (temperature > TEMP_HIGH) {
+    // Full speed (100%)
+    fan1Speed = 255;
+    fan2Speed = 255;
+    analogWrite(FAN1_PWM_PIN, fan1Speed);
+    analogWrite(FAN2_PWM_PIN, fan2Speed);
+    Serial.println("Fans set to 100% speed (Full Power)");
+  } else if (temperature > TEMP_MEDIUM && temperature <= TEMP_HIGH) {
+    // 75% speed
+    fan1Speed = 192;
+    fan2Speed = 192;
+    analogWrite(FAN1_PWM_PIN, fan1Speed);
+    analogWrite(FAN2_PWM_PIN, fan2Speed);
+    Serial.println("Fans set to 75% speed");
+  } else if (temperature > TEMP_LOW && temperature <= TEMP_MEDIUM) {
+    // 50% speed
+    fan1Speed = 128;
+    fan2Speed = 128;
+    analogWrite(FAN1_PWM_PIN, fan1Speed);
+    analogWrite(FAN2_PWM_PIN, fan2Speed);
+    Serial.println("Fans set to 50% speed");
+  } else {
+    // 25% speed
+    fan1Speed = 64;
+    fan2Speed = 64;
+    analogWrite(FAN1_PWM_PIN, fan1Speed);
+    analogWrite(FAN2_PWM_PIN, fan2Speed);
+    Serial.println("Fans set to 25% speed");
   }
-  Serial.println();
-  if(!client.connected()) {
-    Serial.println("Failed to connect...");
-    return;
-  }
-
-  Serial.print("Request resource: ");
-  Serial.println(resource);
-
-  // Get temperature
-  sensors.requestTemperatures();
-  float tempC = sensors.getTempCByIndex(0);
-
-  // Get CO2 and temperature from MH-Z16 sensor
-  int co2ppm = mhz19.getCO2PPM();
-  int tempco2 = mhz19.getTemperature();
-
-  // Get weight from HX711 load cell
-  float weight = LoadCell.getData();
-
-  // Get pH value from pH sensor
-  float pHValue = ph.readPH(voltage, temperature);
-
-  // Get moisture values from moisture sensors
-  float moisture1 = measured_moisture_Array[0];
-  float moisture2 = measured_moisture_Array[1];
-  float moisture3 = measured_moisture_Array[2];
-
-  // Read DHT sensor values (already done in loop)
-  float dhtTemp = dhtTemperature;
-  float dhtHum = dhtHumidity;
-
-// 1st request: CO2, CO2 temp, DHT temperature
-  String jsonObject1 = String("{\"value1\":\"") + co2ppm + "\",\"value2\":\"" + tempco2
-                        + "\",\"value3\":\"" + dhtTemp + "\"}";
-  sendIFTTTRequest(client, jsonObject1);
-
-  // 2nd request: Weight, pH, DHT humidity
-  String jsonObject2 = String("{\"value1\":\"") + weight + "\",\"value2\":\"" + pHValue
-                        + "\",\"value3\":\"" + dhtHum + "\"}";
-  sendIFTTTRequest(client, jsonObject2);
-
-  // 3rd request: Moisture values (moisture1, moisture2, moisture3)
-  String jsonObject3 = String("{\"value1\":\"") + moisture1 + "\",\"value2\":\"" + moisture2
-                        + "\",\"value3\":\"" + moisture3 + "\"}";
-  sendIFTTTRequest(client, jsonObject3);
-
-  Serial.println("\nclosing connection");
-  client.stop();
 }
 
-// Function to send individual requests
-void sendIFTTTRequest(WiFiClient &client, String jsonObject) {
-  // Ensure the client is connected
-  if (!client.connected()) {
-    Serial.println("Reconnecting...");
-    if (!client.connect(server, 80)) {
-      Serial.println("Failed to reconnect...");
-      return;
+
+// Replace the current makeIFTTTRequest() function with this updated version
+
+void uploadDataToGoogleSheets() {
+  Serial.println("Uploading data to Google Sheets...");
+
+  if (WiFi.status() == WL_CONNECTED) {
+    // Create a URL for sending data to Google Sheets
+    String sendDataURL = Web_App_URL + "?sts=write";
+    sendDataURL += "&temp=" + String(sensors.getTempCByIndex(0)); // Temperature probe
+    sendDataURL += "&co2=" + String(mhz19.getCO2PPM()); // CO2 PPM
+    sendDataURL += "&pH=" + String(phValue, 4); // pH value
+    sendDataURL += "&moisture=" + String(measured_moisture); // Soil moisture
+    sendDataURL += "&weight=" + String(LoadCell.getData()); // Load cell weight
+    sendDataURL += "&humidity=" + String(dhtHumidity); // dht22 humidity
+    sendDataURL += "&fan1=" + String(fan1Speed);  // Fan 1 speed
+    sendDataURL += "&fan2=" + String(fan2Speed);  // Fan 2 speed
+
+
+    // Log the URL for debugging
+    Serial.println("URL: " + sendDataURL);
+
+    // Send the HTTP GET request to Google Sheets
+    HTTPClient http;
+    http.begin(sendDataURL.c_str());
+    int httpCode = http.GET();
+    
+    // Check the HTTP status code
+    if (httpCode > 0) {
+      Serial.print("HTTP Status Code: ");
+      Serial.println(httpCode);
+      String payload = http.getString();
+      Serial.println("Payload: " + payload);
+    } else {
+      Serial.println("Error in HTTP request");
     }
-  }
-
-  // Prepare the HTTP POST request
-  client.println(String("POST ") + resource + " HTTP/1.1");
-  client.println(String("Host: ") + server); 
-  client.println("Connection: close\r\nContent-Type: application/json");
-  client.print("Content-Length: ");
-  client.println(jsonObject.length());
-  client.println();
-  client.println(jsonObject);
-
-  // Wait for response
-  int timeout = 5 * 10; // 5 seconds             
-  while(!client.available() && (timeout-- > 0)){
-    delay(100);
-  }
-  if(!client.available()) {
-    Serial.println("No response...");
-    return;
-  }
-
-  // Print the server's response for debugging
-  while(client.available()){
-    Serial.write(client.read());
+    
+    http.end(); // End the HTTP request
+  } else {
+    Serial.println("WiFi not connected");
   }
 }

@@ -1,0 +1,182 @@
+//________________________________________________________________________________Google Sheets and Google Apps Script Project Information.
+Google Sheets Project Name      : ESP32_Google_Spreadsheet_Top
+Google Sheets ID                : 1GSgVKX0JrZ3tnjrPqH1MJH5x4zC1HLL_X6laYoMrY5g
+Sheet Name                      : ESP32_Google_Sheets_Sheet_Top
+
+Top Tray Data Logger
+Date | Time | Sensor Reading Status | Temperature (°C) | Humidity (%) | Switch 1 | Switch 2
+
+Latest Top Tray Data
+Date | Time | Sensor Reading Status | Temperature (°C) | Humidity (%) | Switch 1 | Switch 2
+
+
+Google Apps Script Project Name : ESP32_Google_Spreadsheet_Apps_Script
+Web app URL                     : https://script.google.com/macros/s/AKfycbwQqygU4waYcLD35KX0dw68z_hXzK_1FgT4MM2peYt-iqu1VKyAb5jBwnlAkuke2y1Y/exec
+
+Web app URL Test Write : 
+https://script.google.com/macros/s/AKfycbwQqygU4waYcLD35KX0dw68z_hXzK_1FgT4MM2peYt-iqu1VKyAb5jBwnlAkuke2y1Y/exec?sts=write&srs=Success&temp=32.5&humd=95&co2=60&pH=9&moisture=45&weight=50000&methane=800&ammonia=399&fan1=178&fan2=123
+Web app URL Test Read  : 
+https://script.google.com/macros/s/AKfycbwQqygU4waYcLD35KX0dw68z_hXzK_1FgT4MM2peYt-iqu1VKyAb5jBwnlAkuke2y1Y/exec?sts=read
+//________________________________________________________________________________
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// Before you use this "Google Apps Script" code, I hope you have watched the video until the end.                                                    //
+// Because there are several configurations and settings for this project and this Google Apps Script code that is shown or can be seen in the video. //
+// And also so that you know how to use this Google Apps Script code.                                                                                 //
+//                                                                                                                                                    //
+// If you see some differences between the code I shared and the code that appears in the video, it's because after I made the video,                 //
+// I fixed several lines of code. So follow the code that I have shared.                                                                              //
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+//________________________________________________________________________________Google Apps Script
+function doGet(e) { 
+  Logger.log(JSON.stringify(e));
+  var result = 'Ok';
+  if (e.parameter == 'undefined') {
+    result = 'No Parameters';
+  }
+  else {
+    var sheet_id = '1GSgVKX0JrZ3tnjrPqH1MJH5x4zC1HLL_X6laYoMrY5g'; 	// Spreadsheet ID.
+    var sheet_name = "ESP32_Google_Spreadsheet_Top";  // Sheet Name in Google Sheets.
+
+    var sheet_open = SpreadsheetApp.openById(sheet_id);
+    var sheet_target = sheet_open.getSheetByName(sheet_name);
+
+    var newRow = sheet_target.getLastRow() + 1;
+
+    var rowDataLog = [];
+
+    var Data_for_O3;
+    var Data_for_P3;
+    var Data_for_Q3;
+    var Data_for_R3;
+    var Data_for_S3;
+    var Data_for_T3;
+    var Data_for_U3;
+    var Data_for_V3;
+    var Data_for_W3;
+    var Data_for_X3;
+    var Data_for_Y3;
+    var Data_for_Z3;
+    var Data_for_AA3;
+
+
+    var Curr_Date = Utilities.formatDate(new Date(), "Asia/Jakarta", 'dd/MM/yyyy');
+    rowDataLog[0] = Curr_Date;  // Date will be written in column A (in the "DHT11 Sensor Data Logger" section).
+    Data_for_O3 = Curr_Date;  // Date will be written in column I3 (in the "Latest DHT11 Sensor Data" section).
+
+    var Curr_Time = Utilities.formatDate(new Date(), "Asia/Jakarta", 'HH:mm:ss');
+    rowDataLog[1] = Curr_Time;  // Time will be written in column B (in the "DHT11 Sensor Data Logger" section).
+    Data_for_P3 = Curr_Time;  // Time will be written in column J3 (in the "Latest DHT11 Sensor Data" section).
+
+    var sts_val = '';
+
+    for (var param in e.parameter) {
+      Logger.log('In for loop, param=' + param);
+      var value = stripQuotes(e.parameter[param]);
+      Logger.log(param + ':' + e.parameter[param]);
+      switch (param) {
+        case 'sts':
+          sts_val = value;
+          break;
+
+        case 'srs':
+          rowDataLog[2] = value;  // Sensor Reading Status will be written in column C
+          Data_for_Q3 = value;  // Sensor Reading Status will be written in column Q3
+          result += ', Sensor Reading Status Written on column C';
+          break;
+
+        case 'temp':
+          rowDataLog[3] = value;  // The temperature value will be written in column D
+          Data_for_R3 = value;  // The temperature value will be written in column R3
+          result += ', Temperature Written on column D';
+          break;
+
+        case 'humd':
+          rowDataLog[4] = value; // The humidity value will be written in column E
+          Data_for_S3 = value;  // The humidity value will be written in column S3
+          result += ', Humidity Written on column E';
+          break;
+
+        case 'co2':
+          rowDataLog[5] = value; // The CO2 value will be written in column F
+          Data_for_T3 = value;  // The CO2 value will be written in column T3
+          result += ', CO2 Written on column F';
+          break;
+
+        case 'pH':
+          rowDataLog[6] = value; // The pH value will be written in column G
+          Data_for_U3 = value;  // The pH value will be written in column U3
+          result += ', pH Written on column G';
+          break;
+
+        case 'moisture':
+          rowDataLog[7] = value; // The soil moisture value will be written in column H
+          Data_for_V3 = value;  // The soil moisture value will be written in column V3
+          result += ', Soil Moisture Written on column H';
+          break;
+
+        case 'weight':
+          rowDataLog[8] = value; // The weight value will be written in column I
+          Data_for_W3 = value;  // The weight value will be written in column W3
+          result += ', Weight Written on column I';
+          break;
+
+        case 'methane':
+          rowDataLog[9] = value; // The methane value will be written in column J
+          Data_for_X3 = value;  // The methane value will be written in column X3
+          result += ', Methane Written on column J';
+          break;
+
+        case 'ammonia':
+          rowDataLog[10] = value; // The ammonia value will be written in column K
+          Data_for_Y3 = value;  // The ammonia value will be written in column Y3
+          result += ', Ammonia Written on column K';
+          break;
+
+        case 'fan1':
+          rowDataLog[11] = value; // The Fan 1 speed will be written in column L
+          Data_for_Z3 = value;  // The Fan 1 speed will be written in column Z3
+          result += ', Fan 1 Speed Written on column L';
+          break;
+
+        case 'fan2':
+          rowDataLog[12] = value; // The Fan 2 speed will be written in column M
+          Data_for_AA3 = value;  // The Fan 2 speed will be written in column AA3
+          result += ', Fan 2 Speed Written on column M';
+          break;  
+        
+        default:
+          result += ", unsupported parameter";
+      }
+    }
+    
+    // Conditions for writing data received from ESP32 to Google Sheets.
+    if (sts_val == 'write') {
+      // Writes data to the "Top Tray Data Logger" section.
+      Logger.log(JSON.stringify(rowDataLog));
+      var newRangeDataLog = sheet_target.getRange(newRow, 1, 1, rowDataLog.length);
+      newRangeDataLog.setValues([rowDataLog]);
+      
+      // Write the data to the "Latest Top Tray Data" section.
+      var RangeDataLatest = sheet_target.getRange('O3:AA3');
+      RangeDataLatest.setValues([[Data_for_O3, Data_for_P3, Data_for_Q3, Data_for_R3, Data_for_S3, Data_for_T3, Data_for_U3, Data_for_V3, Data_for_W3, Data_for_X3, Data_for_Y3, Data_for_Z3, Data_for_AA3]]);
+
+      return ContentService.createTextOutput(result);
+    }
+    
+    // Conditions for sending data to ESP32 when ESP32 reads data from Google Sheets.
+    if (sts_val == 'read') {
+      // Use the line of code below if you want ESP32 to read data from columns I3 to O3 (Date,Time,Sensor Reading Status,Temperature,Humidity,Switch 1, Switch 2).
+      // var all_Data = sheet_target.getRange('I3:O3').getDisplayValues();
+      
+      // Use the line of code below if you want ESP32 to read data from columns K3 to O3 (Sensor Reading Status,Temperature,Humidity,Switch 1, Switch 2).
+      var all_Data = sheet_target.getRange('O3:AA3').getValues();
+      return ContentService.createTextOutput(all_Data);
+    }
+  }
+}
+
+function stripQuotes( value ) {
+  return value.replace(/^["']|['"]$/g, "");
+}
