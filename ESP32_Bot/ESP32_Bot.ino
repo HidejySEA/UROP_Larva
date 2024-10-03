@@ -8,17 +8,19 @@
 #include <EEPROM.h>
 #include "DHT.h"
 #include <HTTPClient.h>
+#include <UniversalTelegramBot.h>
+#include <WiFiClientSecure.h>
 #endif
 
 // WiFi credentials
-const char* ssid     = "pc_home";
-const char* password = "362136Pc";
+const char* ssid     = "notyouriphone";
+const char* password = "hidejy123";
 
 // Google script Web_App_URL.
-String Web_App_URL = "https://script.google.com/macros/s/AKfycbzdebJ5Hq0BXyWOkUi9yp6X_ujAkmN9TiNw9j0phywKNa0jZNcP-JHf3HgMeeGwlSMZrQ/exec";
+String Web_App_URL = "https://script.google.com/macros/s/AKfycbyI-P0pGyJTJ4JevCI6MkAdXxH5J5JCeb78t4gC7NDbqzmqd_S7xIWKz0yifErPjG6log/exec";
 // MHZ19 CO2 sensor pins
-const int rx_pin = 15; // Serial tx pin no 
-const int tx_pin = 16; // Serial rx pin no  (these two ports need to be reversed )
+const int rx_pin = 16; // Serial tx pin no 
+const int tx_pin = 17; // Serial rx pin no  (these two ports need to be reversed )
 MHZ19_uart mhz19;
 
 // HX711 load cell pins and initialization
@@ -40,36 +42,52 @@ DFRobot_ESP_PH ph;
 #define ESPVOLTAGE 3300 // the esp voltage supply value
 #define PH_PIN 10      // the esp gpio data pin number (i forgot to connect to which one)
 float voltage, phValue, temperature = 25;
+bool inPHCalibrationMode = false;  // Track calibration mode
 
 // Capacitive Soil Moisture Sensor
 #define m_sensorPin1 11
 float measured_moisture; // Store the moisture measured
+float output_moisture; // store the output moisture
 
 
 // DHT 22
-#define DHTPIN 35    // Digital pin connected to the DHT sensor #2 located at the Outlet
+#define DHTPIN 36    // Digital pin connected to the DHT sensor #2 located at the Outlet
 #define DHTTYPE DHT22   // DHT 22
 DHT dht(DHTPIN, DHTTYPE); // Initilialize DHT sensor
 float dhtTemperature = 0;
 float dhtHumidity = 0;
 
 // Fan control pins
-#define FAN1_PWM_PIN 17  // PWM pin for Fan 1
-#define FAN2_PWM_PIN 18  // PWM pin for Fan 2
-
+#define FAN1_PWM_PIN 41  // PWM pin for Fan 1
+#define FAN2_PWM_PIN 42  // PWM pin for Fan 2
+const int fan1pin = 41;  // 16 corresponds to GPIO 16
+const int fan2pin = 42;
 
 // Temperature threshold for fan control
-#define TEMP_LOW 25    // Low temperature threshold
-#define TEMP_MEDIUM 30 // Medium temperature threshold
-#define TEMP_HIGH 35   // High temperature threshold
+#define TEMP_LOW 20    // Low temperature threshold
+#define TEMP_MEDIUM 25 // Medium temperature threshold
+#define TEMP_HIGH 30   // High temperature threshold
 
 // Timing settings
-unsigned long previousMillis = 0; 
-const long interval = 60000; // Interval to wait for (milliseconds) - 1 minute
+unsigned long previousMillisSerial = 0;  // Timing for serial print
+unsigned long previousMillisUpload = 0;  // Timing for uploading to Google Sheets
+const long serialInterval = 10000;  // Interval for serial print (10 seconds)
+const long uploadInterval = 30000;  // Interval for upload (30 seconds)
+
 // Fan speed
 int fan1Speed = 0;  // Variable to store Fan 1 speed (PWM value)
 int fan2Speed = 0;  // Variable to store Fan 2 speed (PWM value)
+int co2ppm    = 0;  //initialize the co2 ppm value globally
 
+WiFiClientSecure client;
+// Replace with your Telegram bot token
+String botToken = "8191757329:AAHrji16r_-Noj7HlDFLuAoL6tFp1wg9GSk";
+#define CHAT_ID "-4558371214"
+
+UniversalTelegramBot bot(botToken, client);
+long lastTimeBotChecked = 0;  // To manage Telegram request timing
+bool autoFanEnabled = true;   // By default, automatic fan control is enabled
+int manualFanSpeed = 0;       // Store the manual fan speed (0-255)
 
 //--------------------------------------SETUP---------------------------------------------//
 void setup() {
@@ -80,6 +98,13 @@ void setup() {
 
   // WiFi setup
   initWifi();
+  
+  #ifdef ESP32
+    client.setCACert(TELEGRAM_CERTIFICATE_ROOT); // Add root certificate for api.telegram.org
+  #endif
+
+  // Initialize EEPROM with enough space for both load cell and pH sensor
+  EEPROM.begin(256); // Initialize EEPROM once for all calibration data  
   
   // Initialize DHT sensor
   dht.begin();
@@ -94,93 +119,113 @@ void setup() {
   delay(10 * 1000); // Warming up MH-Z19
 
   // HX711 setup
-  float calibrationValue = 696.0; // Calibration value
   LoadCell.begin();
-  unsigned long stabilizingtime = 2000; // Tare precision can be improved by adding a few seconds of stabilizing time
-  boolean _tare = true; // Set this to false if you don't want tare to be performed in the next step
-  LoadCell.start(stabilizingtime, _tare);
+  float calibrationValue = LoadCell.getCalFactor(); // Load saved calibration factor
+  LoadCell.setCalFactor(calibrationValue); // Set the calibration factor
+  LoadCell.start(2000, true); // Stabilize and perform tare
   if (LoadCell.getTareTimeoutFlag()) {
-    Serial.println("Timeout, check MCU>HX711 wiring and pin designations");
+    Serial.println("Tare Timeout, check connections.");
   } else {
-    LoadCell.setCalFactor(calibrationValue); // Set calibration factor (float)
-    Serial.println("Startup is complete");
+    Serial.println("Startup complete. Ready for manual calibration ");
   }
+
   // pH sensor setup
-  EEPROM.begin(32); // Needed to permit storage of calibration value in EEPROM
   ph.begin();
 
 // Set initial fan speed to 0 (fans off)
+  pinMode(fan1pin,OUTPUT);
+  pinMode(fan2pin,OUTPUT);
   analogWrite(FAN1_PWM_PIN, 0);
   analogWrite(FAN2_PWM_PIN, 0);
 }
+
 void loop() {
   unsigned long currentMillis = millis();
-  static boolean newDataReady = 0;
-  const int serialPrintInterval = 10000; // Set to 10 seconds (10000 milliseconds)
   
-  // Check for new data from HX711
-  if (LoadCell.update()) newDataReady = true;
-
-  // Get smoothed value from the dataset and print it every 10 seconds
-  if (newDataReady && millis() - previousMillis >= serialPrintInterval) {
-    previousMillis = millis(); // Reset the last print time
-    float weight = LoadCell.getData();
-    Serial.print("Load_cell output value: ");
-    Serial.println(weight);
-    newDataReady = 0;
-
-    // pH sensor reading
-    voltage = analogRead(PH_PIN) / ESPADC * ESPVOLTAGE; // Read the voltage
-    phValue = ph.readPH(voltage, temperature); // Convert voltage to pH with temperature compensation
-    Serial.print("pH:");
-    Serial.println(phValue, 4);
-    
-    // Read temperature probe
-    sensors.requestTemperatures();
-    float tempC = sensors.getTempCByIndex(0);
-    Serial.print("Temperature (C): ");
-    Serial.println(tempC);
-
-    // Read CO2 sensor
-    int co2ppm = mhz19.getCO2PPM();
-    int tempco2 = mhz19.getTemperature();
-    Serial.print("CO2 PPM: ");
-    Serial.println(co2ppm);
-    Serial.print("MHZ19 Temp (C): ");
-    Serial.println(tempco2);
-
-    // Read moisture sensors
-    readMoistureSensor();
-    Serial.print("Moisture Sensor: ");
-    Serial.println(measured_moisture);
-
-
-    // Read DHT sensor
-    readDHTSensor();
-
-    // Fan speed control based on temperature
-    controlFans(tempC);
+  // Check for new data from HX711 regularly
+  if (LoadCell.update()) {
+    // Load cell is providing new data
+  }
+  // Check for Telegram messages
+  checkTelegramMessages();
+  
+  // Check if it's time to print to serial (every 10 seconds)
+  if (currentMillis - previousMillisSerial >= serialInterval) {
+    previousMillisSerial = currentMillis; // Save the last print time
+    printSensorDataToSerial(); // Call the function to print sensor data
   }
 
-  // Receive command from serial terminal, send 't' to initiate tare operation
-  if (Serial.available() > 0) {
-    char inByte = Serial.read();
-    if (inByte == 't') LoadCell.tareNoDelay();
+  // Check if it's time to upload to Google Sheets (every 30 seconds)
+  if (currentMillis - previousMillisUpload >= uploadInterval) {
+    previousMillisUpload = currentMillis; // Save the last upload time
+    uploadDataToGoogleSheets(); // Call the function to upload data to Google Sheets
   }
 
-  // Check if last tare operation is complete
-  if (LoadCell.getTareStatus() == true) {
-    Serial.println("Tare complete");
-  }
+  // // Receive command from serial terminal
+  // if (Serial.available() > 0) {
+  //   char inByte = Serial.read();
 
-  // Check if it's time to publish a new message
-  if (currentMillis - previousMillis >= interval) {
-    previousMillis = currentMillis; // Save the last time a message was sent
-    // Upload data to Google Sheets
-    uploadDataToGoogleSheets(); // Call to upload data to Google Sheets
-  }
+  //   if (inByte == 't') {
+  //     // Tare HX711
+  //     LoadCell.tareNoDelay();
+  //   } else if (inByte == 'c') {
+  //     // Calibrate load cell
+  //     calibrateLoadCell();
+  //   } else if (inByte == 'enterph') {
+  //     // Enter pH calibration mode
+  //     enterPHCalibrationMode();
+  //   } else if (inByte == 'exitph') {
+  //     // Exit pH sensor calibration mode and save
+  //     exitPHCalibrationMode();
+  //   }
+  // }
+
+  // // Perform pH calibration if in calibration mode
+  // if (inPHCalibrationMode) {
+  //   ph.calibration(voltage, temperature); // Perform pH sensor calibration process
+  // }
+
+  // // Check if last tare operation is complete
+  // if (LoadCell.getTareStatus() == true) {
+  //   Serial.println("Tare complete");
+  // }
 }
 
+// Function to print sensor data to serial every 10 seconds
+void printSensorDataToSerial() {
+  Serial.println("Printing sensor data to serial...");
+
+  // Get smoothed value from the dataset and print it
+  float weight = LoadCell.getData();
+  Serial.print("Load_cell output value: ");
+  Serial.println(weight);
+
+  // pH sensor reading
+  voltage = analogRead(PH_PIN) / ESPADC * ESPVOLTAGE; // Read the voltage
+  phValue = ph.readPH(voltage, temperature); // Convert voltage to pH with temperature compensation
+  Serial.print("pH: ");
+  Serial.println(phValue);
+
+  // Read temperature probe
+  sensors.requestTemperatures();
+  float tempC = sensors.getTempCByIndex(0);
+  Serial.print("Temperature (C): ");
+  Serial.println(tempC);
+
+  // Read CO2 sensor
+  int co2ppm = mhz19.getCO2PPM();
+  Serial.print("CO2 PPM: ");
+  Serial.println(co2ppm);
+
+  // Read moisture sensors
+  readMoistureSensor();
+
+  // Read DHT sensor
+  readDHTSensor();
+
+  // Fan speed control based on temperature
+  controlFans(tempC);
+}
 
 void initWifi() {
   Serial.print("Connecting to: "); 
@@ -208,6 +253,7 @@ void initWifi() {
 
 void readMoistureSensor() {
   measured_moisture = analogRead(m_sensorPin1);
+  output_moisture = measured_moisture/4095 * 100;
   Serial.print("Moisture Sensor: ");
   Serial.println(measured_moisture);
 }
@@ -221,42 +267,191 @@ void readDHTSensor() {
         Serial.println(F("Failed to read from DHT sensor!"));
         return;
     }
+    Serial.print("Humidity: ");
+    Serial.print(dhtHumidity);
+    Serial.print("%  Temperature: ");
+    Serial.print(dhtTemperature);
+    Serial.println("°C");
 }
 
+// Fan control based on temperature
 void controlFans(float temperature) {
-  if (temperature > TEMP_HIGH) {
-    // Full speed (100%)
-    fan1Speed = 255;
-    fan2Speed = 255;
-    analogWrite(FAN1_PWM_PIN, fan1Speed);
-    analogWrite(FAN2_PWM_PIN, fan2Speed);
-    Serial.println("Fans set to 100% speed (Full Power)");
-  } else if (temperature > TEMP_MEDIUM && temperature <= TEMP_HIGH) {
-    // 75% speed
-    fan1Speed = 192;
-    fan2Speed = 192;
-    analogWrite(FAN1_PWM_PIN, fan1Speed);
-    analogWrite(FAN2_PWM_PIN, fan2Speed);
-    Serial.println("Fans set to 75% speed");
-  } else if (temperature > TEMP_LOW && temperature <= TEMP_MEDIUM) {
-    // 50% speed
-    fan1Speed = 128;
-    fan2Speed = 128;
-    analogWrite(FAN1_PWM_PIN, fan1Speed);
-    analogWrite(FAN2_PWM_PIN, fan2Speed);
-    Serial.println("Fans set to 50% speed");
+  if (autoFanEnabled) {
+    // Automatic fan control based on temperature thresholds
+    if (temperature > TEMP_HIGH) {
+      fan1Speed = 153;
+      fan2Speed = 153;
+    } else if (temperature > TEMP_MEDIUM && temperature <= TEMP_HIGH) {
+      fan1Speed = 102;
+      fan2Speed = 102;
+    } else if (temperature > TEMP_LOW && temperature <= TEMP_MEDIUM) {
+      fan1Speed = 51;
+      fan2Speed = 51;
+    } else {
+      fan1Speed = 25;
+      fan2Speed = 25;
+    }
   } else {
-    // 25% speed
-    fan1Speed = 64;
-    fan2Speed = 64;
-    analogWrite(FAN1_PWM_PIN, fan1Speed);
-    analogWrite(FAN2_PWM_PIN, fan2Speed);
-    Serial.println("Fans set to 25% speed");
+    // Manual fan control
+    fan1Speed = manualFanSpeed;
+    fan2Speed = manualFanSpeed;
+  }
+  analogWrite(FAN1_PWM_PIN, fan1Speed);
+  analogWrite(FAN2_PWM_PIN, fan2Speed);
+  Serial.println("Fan speeds set based on current mode.");
+}
+
+// // Calibration function for Load Cell
+// void calibrateLoadCell() {
+//   Serial.println("***");
+//   Serial.println("Start calibration:");
+//   Serial.println("Place the load cell an a level stable surface.");
+//   Serial.println("Remove any load applied to the load cell.");
+//   Serial.println("Send 't' from serial monitor to set the tare offset.");
+
+//   boolean _resume = false;
+//   while (_resume == false) {
+//     LoadCell.update();
+//     if (Serial.available() > 0) {
+//       if (Serial.available() > 0) {
+//         char inByte = Serial.read();
+//         if (inByte == 't') LoadCell.tareNoDelay();
+//       }
+//     }
+//     if (LoadCell.getTareStatus() == true) {
+//       Serial.println("Tare complete");
+//       _resume = true;
+//     }
+//   }
+
+//   Serial.println("Now, place your known mass on the loadcell.");
+//   Serial.println("Then send the weight of this mass (i.e. 100.0) from serial monitor.");
+
+//   float known_mass = 0;
+//   _resume = false;
+//   while (_resume == false) {
+//     LoadCell.update();
+//     if (Serial.available() > 0) {
+//       known_mass = Serial.parseFloat();
+//       if (known_mass != 0) {
+//         Serial.print("Known mass is: ");
+//         Serial.println(known_mass);
+//         _resume = true;
+//       }
+//     }
+//   }
+
+//   LoadCell.refreshDataSet(); //refresh the dataset to be sure that the known mass is measured correct
+//   float newCalibrationValue = LoadCell.getNewCalibration(known_mass); //get the new calibration value
+
+//   Serial.print("New calibration value has been set to: ");
+//   Serial.print(newCalibrationValue);
+//   Serial.println(", use this as calibration value (calFactor) in your project sketch.");
+//   Serial.print("Save this value to EEPROM adress ");
+//   Serial.print(calVal_eepromAdress);
+//   Serial.println("? y/n");
+
+//   _resume = false;
+//   while (_resume == false) {
+//     if (Serial.available() > 0) {
+//       char inByte = Serial.read();
+//       if (inByte == 'y') {
+// #if defined(ESP8266)|| defined(ESP32)
+//         EEPROM.begin(512);
+// #endif
+//         EEPROM.put(calVal_eepromAdress, newCalibrationValue);
+// #if defined(ESP8266)|| defined(ESP32)
+//         EEPROM.commit();
+// #endif
+//         EEPROM.get(calVal_eepromAdress, newCalibrationValue);
+//         Serial.print("Value ");
+//         Serial.print(newCalibrationValue);
+//         Serial.print(" saved to EEPROM address: ");
+//         Serial.println(calVal_eepromAdress);
+//         _resume = true;
+
+//       }
+//       else if (inByte == 'n') {
+//         Serial.println("Value not saved to EEPROM");
+//         _resume = true;
+//       }
+//     }
+//   }
+
+//   Serial.println("End calibration");
+//   Serial.println("***");
+//   Serial.println("To re-calibrate, send 'r' from serial monitor.");
+//   Serial.println("For manual edit of the calibration value, send 'c' from serial monitor.");
+//   Serial.println("***");
+// }
+
+
+// // Enter pH calibration mode
+// void enterPHCalibrationMode() {
+//   Serial.println("Entering pH calibration mode. Use buffer solutions (4.0 or 7.0).");
+//   inPHCalibrationMode = true; // Enable calibration mode
+// }
+
+// // Exit pH calibration mode and save data
+// void exitPHCalibrationMode() {
+//   if (inPHCalibrationMode) {
+//     Serial.println("Exiting pH calibration mode and saving data.");
+//     inPHCalibrationMode = false; // Disable calibration mode
+//   } else {
+//     Serial.println("Error: Not in pH calibration mode.");
+//   }
+// }
+
+void handleTelegramMessages(int numNewMessages) {
+  for (int i = 0; i < numNewMessages; i++) {
+    String chat_id = String(bot.messages[i].chat_id);
+    if (chat_id != CHAT_ID){
+      bot.sendMessage(chat_id, "Unauthorized user", "");
+      continue;
+    }
+    String text = bot.messages[i].text;
+
+    if (text == "/start") {
+      String welcomeMsg = "Welcome to the Fan Control Mid!\n"
+                          "Commands:\n"
+                          "/auto_on_bot - Enable automatic fan control\n"
+                          "/auto_off_bot - Disable automatic fan control\n"
+                          "/set_speed_bot - Set fan speed manually (0-255)";
+      bot.sendMessage(chat_id, welcomeMsg, "");
+    } 
+    else if (text == "/auto_on_bot") {
+      autoFanEnabled = true;
+      bot.sendMessage(chat_id, "Automatic fan control enabled.", "");
+    } 
+    else if (text == "/auto_off_bot") {
+      autoFanEnabled = false;
+      bot.sendMessage(chat_id, "Automatic fan control disabled. Use /set_speed_bot to manually adjust the fan speed.", "");
+    } 
+    else if (text.startsWith("/set_speed_bot")) {
+      int speed = text.substring(15).toInt();
+      if (speed >= 0 && speed <= 255) {
+        manualFanSpeed = speed;
+        bot.sendMessage(chat_id, "Manual fan speed set to: " + String(manualFanSpeed), "");
+      } else {
+        bot.sendMessage(chat_id, "Invalid speed. Please enter a number between 0 and 255.", "");
+      }
+    } 
+    else {
+      bot.sendMessage(chat_id, "Unknown command. Use /start to see available commands.", "");
+    }
   }
 }
 
-
-// Replace the current makeIFTTTRequest() function with this updated version
+void checkTelegramMessages() {
+  if (millis() - lastTimeBotChecked > 1000) {
+    int numNewMessages = bot.getUpdates(bot.last_message_received + 1);
+    while (numNewMessages) {
+      handleTelegramMessages(numNewMessages);
+      numNewMessages = bot.getUpdates(bot.last_message_received + 1);
+    }
+    lastTimeBotChecked = millis();
+  }
+}
 
 void uploadDataToGoogleSheets() {
   Serial.println("Uploading data to Google Sheets...");
@@ -266,10 +461,11 @@ void uploadDataToGoogleSheets() {
     String sendDataURL = Web_App_URL + "?sts=write";
     sendDataURL += "&temp=" + String(sensors.getTempCByIndex(0)); // Temperature probe
     sendDataURL += "&co2=" + String(mhz19.getCO2PPM()); // CO2 PPM
-    sendDataURL += "&pH=" + String(phValue, 4); // pH value
-    sendDataURL += "&moisture=" + String(measured_moisture); // Soil moisture
+    sendDataURL += "&pH=" + String(phValue); // pH value
+    sendDataURL += "&moisture=" + String(output_moisture); // Soil moisture
     sendDataURL += "&weight=" + String(LoadCell.getData()); // Load cell weight
-    sendDataURL += "&humidity=" + String(dhtHumidity); // dht22 humidity
+    sendDataURL += "&humd=" + String(dhtHumidity); // dht22 humidity
+    sendDataURL += "&airtemp=" + String(dhtTemperature); // DHT22 temperature
     sendDataURL += "&fan1=" + String(fan1Speed);  // Fan 1 speed
     sendDataURL += "&fan2=" + String(fan2Speed);  // Fan 2 speed
 

@@ -7,7 +7,6 @@
 #if defined(ESP8266)|| defined(ESP32) || defined(AVR)
 #include <EEPROM.h>
 #include "DHT.h"
-#include <Adafruit_Sensor.h>
 #include <HTTPClient.h>
 #include <UniversalTelegramBot.h>
 #include <WiFiClientSecure.h>
@@ -18,8 +17,7 @@ const char* ssid     = "notyouriphone";
 const char* password = "hidejy123";
 
 // Google script Web_App_URL.
-String Web_App_URL = "https://script.google.com/macros/s/AKfycbwI5tAxJXt79wP_-mtMWNzOd_B-s7omgbBfwpaN1gT3Tav16eby_bkGCn_bPUx-Wop5/exec";
-
+String Web_App_URL = "https://script.google.com/macros/s/AKfycbxUDHaVHGoN2dLkyCeqHjxD3Vg0j94s4yJKjPXvr55amNmAaoUrPrVa_ceNS9s6Fn4w/exec";
 // MHZ19 CO2 sensor pins
 const int rx_pin = 16; // Serial tx pin no 
 const int tx_pin = 17; // Serial rx pin no  (these two ports need to be reversed )
@@ -29,7 +27,6 @@ MHZ19_uart mhz19;
 const int HX711_dout = 4; // MCU > HX711 dout pin
 const int HX711_sck =  5;  // MCU > HX711 sck pin
 HX711_ADC LoadCell(HX711_dout, HX711_sck);
-float weight = 0;
 
 const int calVal_eepromAdress = 0;
 unsigned long t = 0;
@@ -43,7 +40,7 @@ DallasTemperature sensors(&oneWire);
 DFRobot_ESP_PH ph;
 #define ESPADC 4096.0   // the esp Analog Digital Conversion value
 #define ESPVOLTAGE 3300 // the esp voltage supply value
-#define PH_PIN 10      // the esp gpio data pin number
+#define PH_PIN 10      // the esp gpio data pin number (i forgot to connect to which one)
 float voltage, phValue, temperature = 25;
 bool inPHCalibrationMode = false;  // Track calibration mode
 
@@ -51,10 +48,12 @@ bool inPHCalibrationMode = false;  // Track calibration mode
 #define m_sensorPin1 11
 float measured_moisture; // Store the moisture measured
 float output_moisture; // store the output moisture
+
+
 // DHT 22
 #define DHTPIN 36    // Digital pin connected to the DHT sensor #2 located at the Outlet
 #define DHTTYPE DHT22   // DHT 22
-DHT dht(DHTPIN, DHTTYPE); // Initialize DHT sensor
+DHT dht(DHTPIN, DHTTYPE); // Initilialize DHT sensor
 float dhtTemperature = 0;
 float dhtHumidity = 0;
 
@@ -78,19 +77,17 @@ const long uploadInterval = 30000;  // Interval for upload (30 seconds)
 // Fan speed
 int fan1Speed = 0;  // Variable to store Fan 1 speed (PWM value)
 int fan2Speed = 0;  // Variable to store Fan 2 speed (PWM value)
-int co2ppm = 0;  // Initialize the CO2 ppm value globally
-
+int co2ppm    = 0;  //initialize the co2 ppm value globally
 
 WiFiClientSecure client;
 // Replace with your Telegram bot token
-String botToken = "7343245323:AAENL-DeQlipU_IPZxYFJTQOzG9GjBdKWrU";
+String botToken = "7530172235:AAH-oEy1jt8iDvB81A-ZIPwcTh2d-MZDvMQ";
 #define CHAT_ID "-4558371214"
 
 UniversalTelegramBot bot(botToken, client);
 long lastTimeBotChecked = 0;  // To manage Telegram request timing
 bool autoFanEnabled = true;   // By default, automatic fan control is enabled
 int manualFanSpeed = 0;       // Store the manual fan speed (0-255)
-
 
 //--------------------------------------SETUP---------------------------------------------//
 void setup() {
@@ -101,7 +98,7 @@ void setup() {
 
   // WiFi setup
   initWifi();
-  
+
   #ifdef ESP32
     client.setCACert(TELEGRAM_CERTIFICATE_ROOT); // Add root certificate for api.telegram.org
   #endif
@@ -118,7 +115,6 @@ void setup() {
 
   // MHZ19 CO2 sensor setup
   mhz19.begin(rx_pin, tx_pin);
-  mhz19.setAutoCalibration(false);
   Serial.println("MH-Z19 is warming up now.");
   delay(10 * 1000); // Warming up MH-Z19
 
@@ -130,29 +126,29 @@ void setup() {
   if (LoadCell.getTareTimeoutFlag()) {
     Serial.println("Tare Timeout, check connections.");
   } else {
-    Serial.println("Startup complete. Ready for manual calibration.");
+    Serial.println("Startup complete. Ready for manual calibration ");
   }
 
   // pH sensor setup
   ph.begin();
 
-  // Set initial fan speed to 0 (fans off)
+// Set initial fan speed to 0 (fans off)
   pinMode(fan1pin,OUTPUT);
   pinMode(fan2pin,OUTPUT);
-  analogWrite(fan2pin, 0);
-  analogWrite(fan1pin, 0);
+  analogWrite(FAN1_PWM_PIN, 0);
+  analogWrite(FAN2_PWM_PIN, 0);
 }
 
 void loop() {
-  unsigned long currentMillis = millis(); // Get the current time
+  unsigned long currentMillis = millis();
   
-  // Check for Telegram messages
-  checkTelegramMessages();
-
   // Check for new data from HX711 regularly
   if (LoadCell.update()) {
     // Load cell is providing new data
   }
+
+  // Check for Telegram messages
+  checkTelegramMessages();
 
   // Check if it's time to print to serial (every 10 seconds)
   if (currentMillis - previousMillisSerial >= serialInterval) {
@@ -232,20 +228,19 @@ void printSensorDataToSerial() {
   controlFans(tempC);
 }
 
-// WiFi initialization function
 void initWifi() {
   Serial.print("Connecting to: "); 
   Serial.print(ssid);
   WiFi.begin(ssid, password); 
 
   int timeout = 10 * 4; // 10 seconds
-  while (WiFi.status() != WL_CONNECTED && (timeout-- > 0)) {
+  while(WiFi.status() != WL_CONNECTED  && (timeout-- > 0)) {
     delay(250);
     Serial.print(".");
   }
   Serial.println("");
 
-  if (WiFi.status() != WL_CONNECTED) {
+  if(WiFi.status() != WL_CONNECTED) {
      Serial.println("Failed to connect");
      return;
   }
@@ -256,7 +251,7 @@ void initWifi() {
   Serial.println(WiFi.localIP());
 }
 
-// Read moisture sensor
+
 void readMoistureSensor() {
   measured_moisture = analogRead(m_sensorPin1);
   output_moisture = measured_moisture/4095 * 100;
@@ -264,7 +259,6 @@ void readMoistureSensor() {
   Serial.println(measured_moisture);
 }
 
-// Read DHT sensor
 void readDHTSensor() {
     dhtHumidity = dht.readHumidity();
     dhtTemperature = dht.readTemperature();
@@ -281,6 +275,7 @@ void readDHTSensor() {
     Serial.println("°C");
 }
 
+// Fan control based on temperature
 void controlFans(float temperature) {
   if (autoFanEnabled) {
     // Automatic fan control based on temperature thresholds
@@ -306,7 +301,6 @@ void controlFans(float temperature) {
   analogWrite(FAN2_PWM_PIN, fan2Speed);
   Serial.println("Fan speeds set based on current mode.");
 }
-
 
 // // Calibration function for Load Cell
 // void calibrateLoadCell() {
@@ -419,22 +413,22 @@ void handleTelegramMessages(int numNewMessages) {
     String text = bot.messages[i].text;
 
     if (text == "/start") {
-      String welcomeMsg = "Welcome to the Fan Control Mid!\n"
+      String welcomeMsg = "Welcome to the Fan Control Top!\n"
                           "Commands:\n"
-                          "/auto_on_mid - Enable automatic fan control\n"
-                          "/auto_off_mid - Disable automatic fan control\n"
-                          "/set_speed_mid - Set fan speed manually (0-255)";
+                          "/auto_on_top - Enable automatic fan control\n"
+                          "/auto_off_top - Disable automatic fan control\n"
+                          "/set_speed_top - Set fan speed manually (0-255)";
       bot.sendMessage(chat_id, welcomeMsg, "");
     } 
-    else if (text == "/auto_on_mid") {
+    else if (text == "/auto_on_top") {
       autoFanEnabled = true;
       bot.sendMessage(chat_id, "Automatic fan control enabled.", "");
     } 
-    else if (text == "/auto_off_mid") {
+    else if (text == "/auto_off_top") {
       autoFanEnabled = false;
-      bot.sendMessage(chat_id, "Automatic fan control disabled. Use /set_speed_mid to manually adjust the fan speed.", "");
+      bot.sendMessage(chat_id, "Automatic fan control disabled. Use /set_speed_top to manually adjust the fan speed.", "");
     } 
-    else if (text.startsWith("/set_speed_mid")) {
+    else if (text.startsWith("/set_speed_top")) {
       int speed = text.substring(15).toInt();
       if (speed >= 0 && speed <= 255) {
         manualFanSpeed = speed;
@@ -460,7 +454,6 @@ void checkTelegramMessages() {
   }
 }
 
-// Upload data to Google Sheets
 void uploadDataToGoogleSheets() {
   Serial.println("Uploading data to Google Sheets...");
 
@@ -472,10 +465,11 @@ void uploadDataToGoogleSheets() {
     sendDataURL += "&pH=" + String(phValue); // pH value
     sendDataURL += "&moisture=" + String(output_moisture); // Soil moisture
     sendDataURL += "&weight=" + String(LoadCell.getData()); // Load cell weight
-    sendDataURL += "&humd=" + String(dhtHumidity); // DHT22 humidity
+    sendDataURL += "&humd=" + String(dhtHumidity); // dht22 humidity
     sendDataURL += "&airtemp=" + String(dhtTemperature); // DHT22 temperature
     sendDataURL += "&fan1=" + String(fan1Speed);  // Fan 1 speed
     sendDataURL += "&fan2=" + String(fan2Speed);  // Fan 2 speed
+
 
     // Log the URL for debugging
     Serial.println("URL: " + sendDataURL);
